@@ -234,7 +234,7 @@ fn start_vtpm() -> Result<String> {
     let tpm_directory = "/tmp/vtpm";
     let tpm_socket = String::from(format!("{tpm_directory}/swtpm-sock"));
 
-    fs::create_dir(tpm_directory)?;
+    fs::create_dir_all(tpm_directory)?;
 
     let output = Command::new("swtpm")
         .arg("socket")
@@ -271,11 +271,19 @@ fn kill_process(pid_file: &str) -> Result<()> {
 }
 
 fn kill_vm() -> Result<()> {
-    kill_process("/tmp/qemu_pid")
+    let pid_file = "/tmp/qemu_pid";
+    kill_process(pid_file)?;
+    fs::remove_file(pid_file)?;
+
+    Ok(())
 }
 
 fn kill_vtpm() -> Result<()> {
-    kill_process("/tmp/swtpm_pid")
+    let pid_file = "/tmp/swtpm_pid";
+    kill_process(pid_file)?;
+    fs::remove_file(pid_file)?;
+
+    Ok(())
 }
 
 fn cli() -> clap::Command {
