@@ -256,7 +256,6 @@ fn start_vtpm() -> Result<String> {
     Ok(tpm_socket)
 }
 
-/// Customize and start a CVM image
 fn kill_process(pid_file: &str) -> Result<()> {
     let pid = fs::read_to_string(pid_file)?;
 
@@ -353,11 +352,11 @@ fn main() -> Result<()> {
                 println!("    kill $(cat /tmp/qemu_pid)");
                 println!("connect to QMP with:");
                 println!("    qmp-shell /tmp/qemu-qmp.sock");
-            }
+            },
             Some(("kill", _)) => {
                 let _ = kill_vm();
                 let _ = kill_vtpm();
-            }
+            },
             _ => {
                 println!("not implemented");
             }
