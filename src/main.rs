@@ -182,9 +182,10 @@ fn create_cloudinit_drive(key_id: &str) -> Result<String> {
 }
 
 fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()> {
-    let output = Command::new("qemu-system-x86_64")
-        // basic VM config
-        .arg("--cpu")
+    let mut cmd = Command::new("qemu-system-x86_64");
+
+    // basic VM config
+    cmd.arg("--cpu")
         .arg("host")
         .arg("-machine")
         .arg("type=q35,accel=kvm")
@@ -205,7 +206,7 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
         .arg("virtio-net-pci,netdev=net00")
         // tpm
         .arg("-chardev")
-        .arg(format!("socket,id=chrtpm,path={vtpm_socket}"))
+        .arg(format!("socket,id=chrtpm,path={vtpm_socket}.ctrl"))
         .arg("-tpmdev")
         .arg("emulator,id=tpm0,chardev=chrtpm")
         .arg("-device")
@@ -218,9 +219,11 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
         .arg(format!("if=virtio,format=raw,file={cloudinit_drive}"))
         // Attaching OVMF firwmware code for UEFI boot
         .arg("-drive")
-        .arg("if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE.fd,readonly=on")
-        // Running the command
-        .output()?;
+        .arg("if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE.fd,readonly=on");
+    
+    println!("{:?}", &cmd);
+    // Running the command
+    let output = cmd.output()?;
 
     if !output.status.success() {
         let err = String::from_utf8(output.stderr)?;
@@ -230,30 +233,34 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
     Ok(())
 }
 
-fn start_vtpm() -> Result<String> {
-    let tpm_directory = "/tmp/vtpm";
-    let tpm_socket = String::from(format!("{tpm_directory}/swtpm-sock"));
+fn start_vtpm(state_directory: &str, socket: &str, server: bool) -> Result<()> {
+    fs::create_dir_all(state_directory)?;
 
-    fs::create_dir_all(tpm_directory)?;
-
-    let output = Command::new("swtpm")
-        .arg("socket")
+    let mut cmd = Command::new("swtpm");
+    cmd.arg("socket")
         .arg("--tpm2")
         .arg("--pid")
         .arg("file=/tmp/swtpm_pid")
         .arg("--tpmstate")
-        .arg(format!("dir={tpm_directory}"))
+        .arg(format!("dir={state_directory}"))
         .arg("--ctrl")
-        .arg(format!("type=unixio,path={tpm_socket}"))
-        .arg("-d")
-        .output()?;
+        .arg(format!("type=unixio,path={socket}.ctrl"))
+        .arg("--flags")
+        .arg("not-need-init,startup-clear")
+        .arg("-d");
 
+    if server {
+        cmd.arg("--server")
+           .arg(format!("type=unixio,path={socket}"));
+    }
+
+    let output = cmd.output()?;
     if !output.status.success() {
         let err = String::from_utf8(output.stderr)?;
         return Err(anyhow!(err));
     }
 
-    Ok(tpm_socket)
+    Ok(())
 }
 
 fn kill_process(pid_file: &str) -> Result<()> {
@@ -280,7 +287,36 @@ fn kill_vm() -> Result<()> {
 fn kill_vtpm() -> Result<()> {
     let pid_file = "/tmp/swtpm_pid";
     kill_process(pid_file)?;
-    fs::remove_file(pid_file)?;
+
+    Ok(())
+}
+
+fn generate_srk(socket: &str) -> Result<()> {
+    let output = Command::new("tpm2_createprimary")
+        .arg("-T")
+        .arg(format!("swtpm:path={socket}"))
+        .arg("-c")
+        .arg("srk.ctx")
+        .output()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8(output.stderr)?;
+        return Err(anyhow!(err));
+    }
+
+    let output = Command::new("tpm2_readpublic")
+        .arg("-T")
+        .arg(format!("swtpm:path={socket}"))
+        .arg("-c")
+        .arg("srk.ctx")
+        .arg("-o")
+        .arg("srk.pub")
+        .output()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8(output.stderr)?;
+        return Err(anyhow!(err));
+    }
 
     Ok(())
 }
@@ -295,18 +331,38 @@ fn cli() -> clap::Command {
                 .subcommand_required(true)
                 .subcommand(
                     clap::Command::new("download").arg(
-                        arg!(--suite[SUITE])
+                        arg!(--suite <SUITE>)
                             .default_value("jammy")
                             .default_missing_value("always"),
                     ),
                 )
-                .subcommand(clap::Command::new("customize")),
+                .subcommand(
+                    clap::Command::new("customize").arg(
+                        arg!(--image <IMAGE>)
+                            .default_value("livecd.ubuntu-cpc.azure.fde.vhd")
+                            .default_missing_value("always"),
+                    ),
+                ),
+        )
+        .subcommand(
+            clap::Command::new("tpm")
+                .about("Manage vTPM")
+                .subcommand_required(true)
+                .subcommand(clap::Command::new("start"))
+                .subcommand(clap::Command::new("setup"))
+                .subcommand(clap::Command::new("kill")),
         )
         .subcommand(
             clap::Command::new("vm")
                 .about("Manage VMs")
                 .subcommand_required(true)
-                .subcommand(clap::Command::new("run"))
+                .subcommand(
+                    clap::Command::new("start").arg(
+                        arg!(--image <IMAGE>)
+                            .default_value("livecd.ubuntu-cpc.azure.fde.vhd")
+                            .default_missing_value("always"),
+                    ),
+                )
                 .subcommand(clap::Command::new("kill")),
         )
 }
@@ -315,7 +371,9 @@ fn main() -> Result<()> {
     let matches = cli().get_matches();
 
     let key_id = "gh:gjolly";
-    let image = "livecd.ubuntu-cpc.azure.fde.vhd";
+
+    let tpm_directory = "/tmp/vtpm";
+    let tpm_socket = String::from(format!("{tpm_directory}/swtpm-sock"));
 
     match matches.subcommand() {
         Some(("image", sub_matches)) => match sub_matches.subcommand() {
@@ -330,7 +388,9 @@ fn main() -> Result<()> {
                 println!("Extracting archive: {}", &image_archive);
                 extract_archive(&image_archive)?;
             }
-            Some(("customize", _)) => {
+            Some(("customize", ssub_matches)) => {
+                let image = ssub_matches.get_one::<String>("IMAGE").expect("required");
+
                 println!("Customizing image: {}", &image);
                 customize_image(&image)?;
             }
@@ -338,29 +398,54 @@ fn main() -> Result<()> {
                 println!("not implemented");
             }
         },
-        Some(("vm", sub_matches)) => match sub_matches.subcommand() {
-            Some(("run", _)) => {
+        Some(("tpm", sub_matches)) => match sub_matches.subcommand() {
+            Some(("start", _)) => {
                 println!("Staring vTPM");
-                let tpm_socket = start_vtpm()?;
+                start_vtpm(&tpm_directory, &tpm_socket, false)?;
+            }
+            Some(("setup", _)) => {
+                println!("Creating SRK");
+                start_vtpm(&tpm_directory, &tpm_socket, true)?;
 
-                println!("Creating cloud-init config drive: {}", &image);
-                let cloudinit_drive = create_cloudinit_drive(key_id)?;
+                // TODO: verify that TPM socket exists
+                generate_srk(&tpm_socket)?;
 
-                println!("Starting VM");
-                start_vm(&image, &cloudinit_drive, &tpm_socket)?;
-                println!("VM started, to kill run:");
-                println!("    kill $(cat /tmp/qemu_pid)");
-                println!("connect to QMP with:");
-                println!("    qmp-shell /tmp/qemu-qmp.sock");
-            },
+                kill_vtpm()?;
+            }
             Some(("kill", _)) => {
-                let _ = kill_vm();
-                let _ = kill_vtpm();
-            },
+                println!("Stopping TPM");
+                // TODO: verify that pid file exists
+                kill_vtpm()?;
+            }
             _ => {
                 println!("not implemented");
             }
         },
+        Some(("vm", sub_matches)) => {
+            match sub_matches.subcommand() {
+                Some(("start", ssub_matches)) => {
+                    let image = ssub_matches.get_one::<String>("image").expect("required");
+
+                    println!("Creating cloud-init config drive");
+                    let cloudinit_drive = create_cloudinit_drive(key_id)?;
+
+                    println!("Starting VM: {}", &image);
+                    // TODO: verify that TPM socket exists
+                    start_vm(&image, &cloudinit_drive, &tpm_socket)?;
+                    println!("VM started, to kill run:");
+                    println!("    kill $(cat /tmp/qemu_pid)");
+                    println!("connect to QMP with:");
+                    println!("    qmp-shell /tmp/qemu-qmp.sock");
+                }
+                Some(("kill", _)) => {
+                    // TODO: verify that pid file exists
+                    kill_vm()?;
+                }
+                _ => {
+                    println!("not implemented");
+                }
+            }
+        }
         _ => {
             println!("not implemented");
         }

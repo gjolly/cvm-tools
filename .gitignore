@@ -1,3 +1,5 @@
 /target
 *.tar.gz
 *.vhd
+*.img
+srk.*
