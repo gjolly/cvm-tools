@@ -162,7 +162,10 @@ fn create_cloudinit_drive(key_id: &str) -> Result<String> {
     let drive = String::from("seed.img");
 
     let user_data = format!("{}/user_data.yaml", env::temp_dir().display());
-    let mut file = fs::File::create(&user_data)?;
+    let mut file = match fs::File::create(&user_data) {
+        Ok(file) => file,
+        Err(err) => return Err(anyhow!(format!("failed to create user_data.yaml {}", err))),
+    };
 
     writeln!(&mut file, "#cloud-config")?;
     writeln!(&mut file, "ssh_import_id:")?;
@@ -191,7 +194,12 @@ fn copy_ovmf_vars() -> Result<String> {
 fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()> {
     let mut cmd = Command::new("qemu-system-x86_64");
 
-    let ovmf_vars = copy_ovmf_vars()?;
+    let ovmf_vars = match copy_ovmf_vars() {
+        Ok(path) => path,
+        Err(err) => {
+            return Err(anyhow!(format!("failed to copy OVMF: {:?}", err)));
+        }
+    };
 
     // basic VM config
     cmd.arg("--cpu")
@@ -233,11 +241,15 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
         .arg(format!("if=pflash,format=raw,unit=1,file={ovmf_vars}"));
     
     // Running the command
-    let output = cmd.output()?;
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(err) => {
+            return Err(anyhow!(format!("failed to run qemu: {:?}", err)));
+        }
+    };
 
     if !output.status.success() {
-        let err = String::from_utf8(output.stderr)?;
-        return Err(anyhow!(err));
+        return Err(anyhow!(String::from_utf8(output.stderr)?));
     }
 
     Ok(())
@@ -450,7 +462,10 @@ fn main() -> Result<()> {
                     let image = ssub_matches.get_one::<String>("image").expect("required");
 
                     println!("Creating cloud-init config drive");
-                    let cloudinit_drive = create_cloudinit_drive(key_id)?;
+                    let cloudinit_drive = match create_cloudinit_drive(key_id) {
+                        Ok(path) => path,
+                        Err(err) => return Err(anyhow!(format!("failed to create cloud-init drive: {}", err))),
+                    };
 
                     println!("Starting VM: {}", &image);
                     // TODO: verify that TPM socket exists
