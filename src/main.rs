@@ -301,6 +301,12 @@ fn kill_vtpm() -> Result<()> {
     Ok(())
 }
 
+fn destroy_vtpm(directory: &str) -> Result<()> {
+    fs::remove_dir_all(directory)?;
+
+    Ok(())
+}
+
 fn generate_srk(socket: &str) -> Result<()> {
     let output = Command::new("tpm2_createprimary")
         .arg("-T")
@@ -360,7 +366,8 @@ fn cli() -> clap::Command {
                 .subcommand_required(true)
                 .subcommand(clap::Command::new("start"))
                 .subcommand(clap::Command::new("setup"))
-                .subcommand(clap::Command::new("kill")),
+                .subcommand(clap::Command::new("kill"))
+                .subcommand(clap::Command::new("destroy")),
         )
         .subcommand(
             clap::Command::new("vm")
@@ -426,6 +433,12 @@ fn main() -> Result<()> {
                 println!("Stopping TPM");
                 // TODO: verify that pid file exists
                 kill_vtpm()?;
+            }
+            Some(("destroy", _)) => {
+                println!("Destroying vTPM state");
+                // TODO: verify that pid file exists
+                let _ = kill_vtpm();
+                destroy_vtpm(tpm_directory)?;
             }
             _ => {
                 println!("not implemented");
