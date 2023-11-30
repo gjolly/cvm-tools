@@ -239,7 +239,7 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
         .arg("if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE_4M.ms.fd,readonly=on")
         .arg("-drive")
         .arg(format!("if=pflash,format=raw,unit=1,file={ovmf_vars}"));
-    
+
     // Running the command
     let output = match cmd.output() {
         Ok(output) => output,
@@ -273,7 +273,7 @@ fn start_vtpm(state_directory: &str, socket: &str, pid_file: &str, server: bool)
 
     if server {
         cmd.arg("--server")
-           .arg(format!("type=unixio,path={socket}"));
+            .arg(format!("type=unixio,path={socket}"));
     }
 
     let output = cmd.output()?;
@@ -290,10 +290,10 @@ fn status_vtpm(state_directory: &str, pid_file: &str) -> String {
         Ok(pid) => return format!("vTPM is running, pid: {}", pid),
         Err(_) => {
             if Path::new(state_directory).join("tpm2-00.permall").exists() {
-                return format!("vTPM setup but not running")
+                return format!("vTPM setup but not running");
             };
 
-            return "vTPM not setup and not running".to_string()
+            return "vTPM not setup and not running".to_string();
         }
     };
 }
@@ -403,6 +403,17 @@ fn cli() -> clap::Command {
         )
 }
 
+fn check_dependencies(dependencies: Vec<&str>) -> Result<()> {
+    for dep in dependencies {
+        let output = Command::new("which").arg(&dep).output()?;
+        if !output.status.success() {
+            return Err(anyhow!(format!("{} not installed", &dep)));
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let matches = cli().get_matches();
 
@@ -415,6 +426,8 @@ fn main() -> Result<()> {
     match matches.subcommand() {
         Some(("image", sub_matches)) => match sub_matches.subcommand() {
             Some(("download", ssub_matches)) => {
+                check_dependencies(vec!["swift", "tar"])?;
+
                 let suite = ssub_matches.get_one::<String>("suite").expect("required");
 
                 let image_archive = format!("{suite}-server-cloudimg-amd64-azure.fde.vhd.tar.gz");
@@ -426,6 +439,7 @@ fn main() -> Result<()> {
                 extract_archive(&image_archive)?;
             }
             Some(("customize", ssub_matches)) => {
+                check_dependencies(vec!["qemu-nbd"])?;
                 let image = ssub_matches.get_one::<String>("image").expect("required");
 
                 println!("Customizing image: {}", &image);
@@ -437,10 +451,14 @@ fn main() -> Result<()> {
         },
         Some(("tpm", sub_matches)) => match sub_matches.subcommand() {
             Some(("start", _)) => {
+                check_dependencies(vec!["swtpm"])?;
+
                 println!("Staring vTPM");
                 start_vtpm(&tpm_directory, &tpm_socket, &tpm_pid_file, false)?;
             }
             Some(("setup", _)) => {
+                check_dependencies(vec!["swtpm", "tpm2"])?;
+
                 println!("Creating SRK");
                 start_vtpm(&tpm_directory, &tpm_socket, &tpm_pid_file, true)?;
 
@@ -470,12 +488,19 @@ fn main() -> Result<()> {
         Some(("vm", sub_matches)) => {
             match sub_matches.subcommand() {
                 Some(("start", ssub_matches)) => {
+                    check_dependencies(vec!["qemu-system-x86_64", "cloud-localds"])?;
+
                     let image = ssub_matches.get_one::<String>("image").expect("required");
 
                     println!("Creating cloud-init config drive");
                     let cloudinit_drive = match create_cloudinit_drive(key_id) {
                         Ok(path) => path,
-                        Err(err) => return Err(anyhow!(format!("failed to create cloud-init drive: {}", err))),
+                        Err(err) => {
+                            return Err(anyhow!(format!(
+                                "failed to create cloud-init drive: {}",
+                                err
+                            )))
+                        }
                     };
 
                     println!("Starting VM: {}", &image);
