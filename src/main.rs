@@ -255,14 +255,14 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
     Ok(())
 }
 
-fn start_vtpm(state_directory: &str, socket: &str, server: bool) -> Result<()> {
+fn start_vtpm(state_directory: &str, socket: &str, pid_file: &str, server: bool) -> Result<()> {
     fs::create_dir_all(state_directory)?;
 
     let mut cmd = Command::new("swtpm");
     cmd.arg("socket")
         .arg("--tpm2")
         .arg("--pid")
-        .arg("file=/tmp/swtpm_pid")
+        .arg(format!("file={}", pid_file))
         .arg("--tpmstate")
         .arg(format!("dir={state_directory}"))
         .arg("--ctrl")
@@ -285,6 +285,19 @@ fn start_vtpm(state_directory: &str, socket: &str, server: bool) -> Result<()> {
     Ok(())
 }
 
+fn status_vtpm(state_directory: &str, pid_file: &str) -> String {
+    match fs::read_to_string(pid_file) {
+        Ok(pid) => return format!("vTPM is running, pid: {}", pid),
+        Err(_) => {
+            if Path::new(state_directory).join("tpm2-00.permall").exists() {
+                return format!("vTPM setup but not running")
+            };
+
+            return "vTPM not setup and not running".to_string()
+        }
+    };
+}
+
 fn kill_process(pid_file: &str) -> Result<()> {
     let pid = fs::read_to_string(pid_file)?;
 
@@ -302,13 +315,6 @@ fn kill_vm() -> Result<()> {
     let pid_file = "/tmp/qemu_pid";
     kill_process(pid_file)?;
     fs::remove_file(pid_file)?;
-
-    Ok(())
-}
-
-fn kill_vtpm() -> Result<()> {
-    let pid_file = "/tmp/swtpm_pid";
-    kill_process(pid_file)?;
 
     Ok(())
 }
@@ -379,7 +385,8 @@ fn cli() -> clap::Command {
                 .subcommand(clap::Command::new("start"))
                 .subcommand(clap::Command::new("setup"))
                 .subcommand(clap::Command::new("kill"))
-                .subcommand(clap::Command::new("destroy")),
+                .subcommand(clap::Command::new("destroy"))
+                .subcommand(clap::Command::new("status")),
         )
         .subcommand(
             clap::Command::new("vm")
@@ -401,6 +408,7 @@ fn main() -> Result<()> {
 
     let key_id = "gh:gjolly";
 
+    let tpm_pid_file = "/tmp/vtpm_pid";
     let tpm_directory = "/tmp/vtpm";
     let tpm_socket = String::from(format!("{tpm_directory}/swtpm-sock"));
 
@@ -430,27 +438,30 @@ fn main() -> Result<()> {
         Some(("tpm", sub_matches)) => match sub_matches.subcommand() {
             Some(("start", _)) => {
                 println!("Staring vTPM");
-                start_vtpm(&tpm_directory, &tpm_socket, false)?;
+                start_vtpm(&tpm_directory, &tpm_socket, &tpm_pid_file, false)?;
             }
             Some(("setup", _)) => {
                 println!("Creating SRK");
-                start_vtpm(&tpm_directory, &tpm_socket, true)?;
+                start_vtpm(&tpm_directory, &tpm_socket, &tpm_pid_file, true)?;
 
                 // TODO: verify that TPM socket exists
                 generate_srk(&tpm_socket)?;
 
-                kill_vtpm()?;
+                kill_process(&tpm_pid_file)?;
             }
             Some(("kill", _)) => {
                 println!("Stopping TPM");
                 // TODO: verify that pid file exists
-                kill_vtpm()?;
+                kill_process(&tpm_pid_file)?;
             }
             Some(("destroy", _)) => {
                 println!("Destroying vTPM state");
                 // TODO: verify that pid file exists
-                let _ = kill_vtpm();
-                destroy_vtpm(tpm_directory)?;
+                let _ = kill_process(&tpm_pid_file);
+                destroy_vtpm(&tpm_directory)?;
+            }
+            Some(("status", _)) => {
+                println!("{}", status_vtpm(&tpm_directory, &tpm_pid_file));
             }
             _ => {
                 println!("not implemented");
