@@ -181,8 +181,17 @@ fn create_cloudinit_drive(key_id: &str) -> Result<String> {
     Ok(drive)
 }
 
+fn copy_ovmf_vars() -> Result<String> {
+    let copy_path = String::from("/tmp/OVMF_VARS.ms.fd");
+    fs::copy("/usr/share/OVMF/OVMF_VARS_4M.ms.fd", &copy_path)?;
+
+    Ok(copy_path)
+}
+
 fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()> {
     let mut cmd = Command::new("qemu-system-x86_64");
+
+    let ovmf_vars = copy_ovmf_vars()?;
 
     // basic VM config
     cmd.arg("--cpu")
@@ -219,9 +228,10 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
         .arg(format!("if=virtio,format=raw,file={cloudinit_drive}"))
         // Attaching OVMF firwmware code for UEFI boot
         .arg("-drive")
-        .arg("if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE.fd,readonly=on");
+        .arg("if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE_4M.ms.fd,readonly=on")
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,unit=1,file={ovmf_vars}"));
     
-    println!("{:?}", &cmd);
     // Running the command
     let output = cmd.output()?;
 
@@ -389,7 +399,7 @@ fn main() -> Result<()> {
                 extract_archive(&image_archive)?;
             }
             Some(("customize", ssub_matches)) => {
-                let image = ssub_matches.get_one::<String>("IMAGE").expect("required");
+                let image = ssub_matches.get_one::<String>("image").expect("required");
 
                 println!("Customizing image: {}", &image);
                 customize_image(&image)?;
