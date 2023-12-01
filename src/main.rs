@@ -364,11 +364,17 @@ fn cli() -> clap::Command {
                 .about("Manage cloud images")
                 .subcommand_required(true)
                 .subcommand(
-                    clap::Command::new("download").arg(
-                        arg!(--suite <SUITE>)
-                            .default_value("jammy")
-                            .default_missing_value("always"),
-                    ),
+                    clap::Command::new("download")
+                        .arg(
+                            arg!(--suite <SUITE>)
+                                .default_value("jammy")
+                                .default_missing_value("always"),
+                        )
+                        .arg(
+                            arg!(--serial <SERIAL>)
+                                .default_value("20231130")
+                                .default_missing_value("always"),
+                        ),
                 )
                 .subcommand(
                     clap::Command::new("customize").arg(
@@ -432,8 +438,9 @@ fn main() -> Result<()> {
 
                 let image_archive = format!("{suite}-server-cloudimg-amd64-azure.fde.vhd.tar.gz");
 
+                let serial = ssub_matches.get_one::<String>("serial").expect("required");
                 println!("Downloading image file from swift: {}", &image_archive);
-                download_image(suite, "20231128", &image_archive, false)?;
+                download_image(suite, &serial, &image_archive, false)?;
 
                 println!("Extracting archive: {}", &image_archive);
                 extract_archive(&image_archive)?;
