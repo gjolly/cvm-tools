@@ -16,6 +16,12 @@ apt install -y \
     python3-swiftclient
 ```
 
+## Build
+
+```bash
+cargo build [--release]
+```
+
 ## Usage
 
 ### Example
@@ -89,10 +95,4 @@ cvm-tools vm start [--image IMAGE]
 
 # stop VM
 cvm-tools vm kill
-```
-
-## Build
-
-```bash
-cargo build
 ```
