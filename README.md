@@ -2,6 +2,20 @@
 
 Setup and run TPM backed FDE VMs with qemu.
 
+## Pre-requisite
+
+Install the following packages:
+
+```bash
+apt install -y \
+    cloud-image-utils \
+    qemu-utils \
+    qemu-system-x86 \
+    swtpm \
+    tpm2-tools \
+    python3-swiftclient
+```
+
 ## Usage
 
 ### Example
