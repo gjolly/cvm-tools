@@ -38,7 +38,7 @@ cvm-tools image customize
 cvm-tools tpm setup
 
 # start the vTMP
-cvm-tools tpm setup
+cvm-tools tpm start
 
 # encrypt and deploy the VM using
 # github.com/canonical/encrypt-cloud-image
