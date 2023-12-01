@@ -4,6 +4,42 @@ Setup and run TPM backed FDE VMs with qemu.
 
 ## Usage
 
+### Example
+
+```bash
+# download the latest VM image
+cvm-tools image download
+
+# customize it to remove make the VM
+# configurable outside of Azure
+cvm-tools image customize
+
+# setup a vTPM locally and create SRK
+cvm-tools tpm setup
+
+# start the vTMP
+cvm-tools tpm setup
+
+# encrypt and deploy the VM using
+# github.com/canonical/encrypt-cloud-image
+# ...encrypt
+encrypt-cloud-image/encrypt-cloud-image encrypt ./livecd.ubuntu-cpc.azure.fde.vhd -o jammy-encrypted.vhd
+# ...deploy using SRK and uefi.json
+encrypt-cloud-image deploy \
+    --srk-pub ./srk.pub \
+    --uefi-config ./uefi.json \
+    --add-efi-boot-manager-profile \
+    --add-efi-secure-boot-profile \
+    --add-ubuntu-kernel-profile \
+    ./jammy-encrypted.vhd
+
+# start the VM
+cvm-tools vm run --image ./jammy-encrypted.vhd
+
+# kill the VM
+cvm-tools vm kill
+```
+
 ### Disk image management
 
 ```bash
