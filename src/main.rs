@@ -408,14 +408,14 @@ fn start_vtpm(state_directory: &str, socket: &str, pid_file: &str, server: bool)
         .arg("--tpmstate")
         .arg(format!("dir={state_directory}"))
         .arg("--ctrl")
-        .arg(format!("type=unixio,path={socket}.ctrl"))
+        .arg(format!("type=unixio,path={socket}.ctrl,mode=0666"))
         .arg("--flags")
         .arg("not-need-init,startup-clear")
         .arg("-d");
 
     if server {
         cmd.arg("--server")
-            .arg(format!("type=unixio,path={socket}"));
+            .arg(format!("type=unixio,path={socket},mode=0666"));
     }
 
     let output = cmd.output()?;
@@ -514,7 +514,7 @@ fn cli() -> clap::Command {
                 )
                 .subcommand(
                     clap::Command::new("customize").arg(
-                        arg!([IMAGE])
+                        arg!([IMAGE]).required(true)
                     ),
                 ),
         )
@@ -534,7 +534,7 @@ fn cli() -> clap::Command {
                 .subcommand_required(true)
                 .subcommand(
                     clap::Command::new("start").arg(
-                        arg!([IMAGE])
+                        arg!([IMAGE]).required(true)
                     ),
                 )
                 .subcommand(clap::Command::new("kill")),
@@ -625,7 +625,7 @@ fn main() -> Result<()> {
                 Some(("start", ssub_matches)) => {
                     check_dependencies(vec!["qemu-system-x86_64", "cloud-localds"])?;
 
-                    let image = ssub_matches.get_one::<String>("image").expect("required");
+                    let image = ssub_matches.get_one::<String>("IMAGE").expect("required");
 
                     println!("Creating cloud-init config drive");
                     let cloudinit_drive = match create_cloudinit_drive(key_id) {
