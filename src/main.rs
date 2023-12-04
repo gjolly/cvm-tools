@@ -514,9 +514,7 @@ fn cli() -> clap::Command {
                 )
                 .subcommand(
                     clap::Command::new("customize").arg(
-                        arg!(--image <IMAGE>)
-                            .default_value("livecd.ubuntu-cpc.azure.fde.vhd")
-                            .default_missing_value("always"),
+                        arg!([IMAGE])
                     ),
                 ),
         )
@@ -536,9 +534,7 @@ fn cli() -> clap::Command {
                 .subcommand_required(true)
                 .subcommand(
                     clap::Command::new("start").arg(
-                        arg!(--image <IMAGE>)
-                            .default_value("livecd.ubuntu-cpc.azure.fde.vhd")
-                            .default_missing_value("always"),
+                        arg!([IMAGE])
                     ),
                 )
                 .subcommand(clap::Command::new("kill")),
@@ -570,7 +566,7 @@ fn main() -> Result<()> {
             Some(("download", ssub_matches)) => {
                 check_dependencies(vec!["az"])?;
 
-                let suite = ssub_matches.get_one::<String>("suite").expect("required");
+                let suite = ssub_matches.get_one::<String>("SUITE").expect("required");
 
                 let image_file = format!("{suite}.img");
 
@@ -579,7 +575,7 @@ fn main() -> Result<()> {
             }
             Some(("customize", ssub_matches)) => {
                 check_dependencies(vec!["qemu-nbd"])?;
-                let image = ssub_matches.get_one::<String>("image").expect("required");
+                let image = ssub_matches.get_one::<String>("IMAGE").expect("required");
 
                 println!("Customizing image: {}", &image);
                 customize_image(&image)?;
@@ -645,8 +641,6 @@ fn main() -> Result<()> {
                     println!("Starting VM: {}", &image);
                     // TODO: verify that TPM socket exists
                     start_vm(&image, &cloudinit_drive, &tpm_socket)?;
-                    println!("VM started, to kill run:");
-                    println!("    kill $(cat /tmp/qemu_pid)");
                     println!("connect to QMP with:");
                     println!("    qmp-shell /tmp/qemu-qmp.sock");
                 }
