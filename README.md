@@ -16,6 +16,8 @@ apt install -y \
     python3-swiftclient
 ```
 
+In order to download images from Azure `azure-cli` should be [installed](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux?pivots=apt#option-2-step-by-step-installation-instructions) and configured (`az login` setup).
+
 ## Build
 
 ```bash
