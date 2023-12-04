@@ -1,10 +1,14 @@
 use anyhow::{anyhow, Result};
 use clap;
 use clap::arg;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
+use std::io;
+use std::io::Read;
 use std::process::Command;
 use std::{env, thread, time};
 use std::{io::Write, path::Path};
+use ureq;
 
 #[derive(PartialEq, Default, Clone, Debug)]
 struct Commit {
@@ -12,20 +16,16 @@ struct Commit {
     message: String,
 }
 
-fn download_image(suite: &str, serial: &str, file: &str, force: bool) -> Result<()> {
-    if !force && Path::new(file).exists() {
-        return Ok(());
-    }
+fn azure_create_group(group_name: &str) -> Result<()> {
+    let location = "northeurope";
 
-    let object = format!("fde-server/{suite}/{serial}/private/{file}");
-    let container = "cloud-images";
-
-    let output = Command::new("swift")
-        .arg("download")
-        .arg("--output")
-        .arg(file)
-        .arg(container)
-        .arg(object)
+    let output = Command::new("az")
+        .arg("group")
+        .arg("create")
+        .arg("--location")
+        .arg(location)
+        .arg("--resource-group")
+        .arg(group_name)
         .output()?;
 
     if !output.status.success() {
@@ -36,13 +36,155 @@ fn download_image(suite: &str, serial: &str, file: &str, force: bool) -> Result<
     Ok(())
 }
 
-fn extract_archive(archive: &str) -> Result<()> {
-    let output = Command::new("tar").arg("xvf").arg(archive).output()?;
+fn azure_create_disk(group_name: &str, disk_name: &str, urn: &str) -> Result<()> {
+    let output = Command::new("az")
+        .arg("disk")
+        .arg("create")
+        .arg("--resource-group")
+        .arg(group_name)
+        .arg("--name")
+        .arg(disk_name)
+        .arg("--hyper-v-generation")
+        .arg("V2")
+        .arg("--image-reference")
+        .arg(urn)
+        .output()?;
 
     if !output.status.success() {
         let err = String::from_utf8(output.stderr)?;
         return Err(anyhow!(err));
     }
+
+    Ok(())
+}
+
+fn azure_export_disk(group_name: &str, disk_name: &str) -> Result<String> {
+    let output = Command::new("az")
+        .arg("disk")
+        .arg("grant-access")
+        .arg("--resource-group")
+        .arg(group_name)
+        .arg("--name")
+        .arg(disk_name)
+        .arg("--duration")
+        // 24h
+        .arg("86400")
+        .arg("--query")
+        .arg("accessSas")
+        .output()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8(output.stderr)?;
+        return Err(anyhow!(err));
+    }
+    let url_with_quotes = String::from_utf8(output.stdout)?;
+    let url = url_with_quotes.trim().trim_matches('"');
+
+    Ok(url.to_string())
+}
+
+struct SizeLimitedReader<R> {
+    inner: R,
+    remaining_bytes: usize,
+    progress_bar: ProgressBar,
+}
+
+impl<R: Read> SizeLimitedReader<R> {
+    pub fn new(inner: R, size: usize) -> Self {
+        let progress_bar = ProgressBar::new(size as u64);
+        progress_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
+                .unwrap()
+                .progress_chars("##-"),
+        );
+
+        SizeLimitedReader {
+            inner,
+            remaining_bytes: size,
+            progress_bar,
+        }
+    }
+}
+
+impl<R: Read> Read for SizeLimitedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.remaining_bytes == 0 {
+            return Ok(0); // Already read the specified number of bytes
+        }
+
+        let bytes_to_read = buf.len().min(self.remaining_bytes);
+        let bytes_read = self.inner.read(&mut buf[..bytes_to_read])?;
+        self.remaining_bytes -= bytes_read;
+
+        self.progress_bar.inc(bytes_read as u64);
+
+        if self.remaining_bytes == 0 {
+            self.progress_bar.finish_and_clear();
+        }
+
+        Ok(bytes_read)
+    }
+}
+
+fn azure_download_disk(url: &str, filename: &str) -> Result<()> {
+    let mut file = fs::File::create(filename)?;
+
+    let mut body = ureq::get(url).call()?.into_reader();
+    let mut reader = SizeLimitedReader::new(&mut body, 4 * usize::pow(1024, 3));
+
+    let mut retries = 0;
+
+    while retries < 10 {
+        match io::copy(&mut reader, &mut file) {
+            Ok(_) => break,
+            Err(err) => {
+                println!("{:?}", err);
+            }
+        };
+
+        retries += 1;
+    }
+
+    Ok(())
+}
+
+fn azure_delete_group(group_name: &str) -> Result<()> {
+    // az group delete --no-wait -y -g
+    let output = Command::new("az")
+        .arg("group")
+        .arg("delete")
+        .arg("--resource-group")
+        .arg(group_name)
+        .arg("--no-wait")
+        .arg("--yes")
+        .output()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8(output.stderr)?;
+        return Err(anyhow!(err));
+    }
+
+    Ok(())
+}
+
+fn download_image(suite: &str, file: &str, force: bool) -> Result<()> {
+    if !force && Path::new(file).exists() {
+        return Ok(());
+    }
+
+    let group_name = "cvm-tools-rg4";
+    let disk_name = "cvm-tools-disk";
+    let urn = format!("Canonical:0001-com-ubuntu-confidential-vm-{suite}:22_04-lts-cvm:latest");
+
+    azure_create_group(group_name)?;
+    azure_create_disk(group_name, disk_name, &urn)?;
+    let url = azure_export_disk(group_name, disk_name)?;
+
+    println!("downloading disk, may take a while...");
+    azure_download_disk(&url, file)?;
+
+    azure_delete_group(group_name)?;
 
     Ok(())
 }
@@ -59,7 +201,7 @@ fn attach_nbd_device(nbd_device: &str, image: &str) -> Result<()> {
     // attach the image to a nbd chardev
     let output = Command::new("qemu-nbd")
         .arg("--format")
-        .arg("vpc")
+        .arg("raw")
         .arg(format!("--connect={nbd_device}"))
         .arg(image)
         .output()?;
@@ -230,7 +372,7 @@ fn start_vm(image: &str, cloudinit_drive: &str, vtpm_socket: &str) -> Result<()>
         .arg("tpm-tis,tpmdev=tpm0")
         // Attaching image drive
         .arg("-drive")
-        .arg(format!("if=virtio,format=vpc,file={image}"))
+        .arg(format!("if=virtio,format=raw,file={image}"))
         // Attaching cloud-init drive (for NoCloud datasource)
         .arg("-drive")
         .arg(format!("if=virtio,format=raw,file={cloudinit_drive}"))
@@ -364,17 +506,11 @@ fn cli() -> clap::Command {
                 .about("Manage cloud images")
                 .subcommand_required(true)
                 .subcommand(
-                    clap::Command::new("download")
-                        .arg(
-                            arg!(--suite <SUITE>)
-                                .default_value("jammy")
-                                .default_missing_value("always"),
-                        )
-                        .arg(
-                            arg!(--serial <SERIAL>)
-                                .default_value("20231130")
-                                .default_missing_value("always"),
-                        ),
+                    clap::Command::new("download").arg(
+                        arg!(--suite <SUITE>)
+                            .default_value("jammy")
+                            .default_missing_value("always"),
+                    ),
                 )
                 .subcommand(
                     clap::Command::new("customize").arg(
@@ -432,18 +568,14 @@ fn main() -> Result<()> {
     match matches.subcommand() {
         Some(("image", sub_matches)) => match sub_matches.subcommand() {
             Some(("download", ssub_matches)) => {
-                check_dependencies(vec!["swift", "tar"])?;
+                check_dependencies(vec!["az"])?;
 
                 let suite = ssub_matches.get_one::<String>("suite").expect("required");
 
-                let image_archive = format!("{suite}-server-cloudimg-amd64-azure.fde.vhd.tar.gz");
+                let image_file = format!("{suite}.img");
 
-                let serial = ssub_matches.get_one::<String>("serial").expect("required");
-                println!("Downloading image file from swift: {}", &image_archive);
-                download_image(suite, &serial, &image_archive, false)?;
-
-                println!("Extracting archive: {}", &image_archive);
-                extract_archive(&image_archive)?;
+                println!("Downloading image file from azure: {}", &image_file);
+                download_image(suite, &image_file, false)?;
             }
             Some(("customize", ssub_matches)) => {
                 check_dependencies(vec!["qemu-nbd"])?;
