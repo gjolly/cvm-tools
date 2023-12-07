@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use rand::{self, distributions::Alphanumeric, Rng};
 use clap;
 use clap::arg;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -83,46 +84,30 @@ fn azure_export_disk(group_name: &str, disk_name: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-struct SizeLimitedReader<R> {
+struct ProgressReader<R> {
     inner: R,
-    remaining_bytes: usize,
-    progress_bar: ProgressBar,
+    bytes_read: usize,
+    progress_bar: Box<ProgressBar>,
 }
 
-impl<R: Read> SizeLimitedReader<R> {
-    pub fn new(inner: R, size: usize) -> Self {
-        let progress_bar = ProgressBar::new(size as u64);
-        progress_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
-                .unwrap()
-                .progress_chars("##-"),
-        );
-
-        SizeLimitedReader {
+impl<R: Read> ProgressReader<R> {
+    pub fn new(inner: R, progress_bar: &Box<ProgressBar>) -> Self {
+        ProgressReader {
             inner,
-            remaining_bytes: size,
-            progress_bar,
+            bytes_read: 0,
+            progress_bar: progress_bar.clone(),
         }
     }
 }
 
-impl<R: Read> Read for SizeLimitedReader<R> {
+impl<R: Read> Read for ProgressReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.remaining_bytes == 0 {
-            return Ok(0); // Already read the specified number of bytes
-        }
-
-        let bytes_to_read = buf.len().min(self.remaining_bytes);
+        let bytes_to_read = buf.len();
         let bytes_read = self.inner.read(&mut buf[..bytes_to_read])?;
-        self.remaining_bytes -= bytes_read;
 
         self.progress_bar.inc(bytes_read as u64);
 
-        if self.remaining_bytes == 0 {
-            self.progress_bar.finish_and_clear();
-        }
-
+        self.bytes_read += bytes_read;
         Ok(bytes_read)
     }
 }
@@ -130,15 +115,33 @@ impl<R: Read> Read for SizeLimitedReader<R> {
 fn azure_download_disk(url: &str, filename: &str) -> Result<()> {
     let mut file = fs::File::create(filename)?;
 
-    let mut body = ureq::get(url).call()?.into_reader();
-    let mut reader = SizeLimitedReader::new(&mut body, 4 * usize::pow(1024, 3));
+    let mut start = 0;
+    let end = 4 * usize::pow(1024, 3);
+
+    let progress_bar = Box::new(ProgressBar::new(end as u64));
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("##-"),
+    );
 
     let mut retries = 0;
 
     while retries < 10 {
+        let range_header = format!("bytes={start}-{end}");
+
+        let mut body = ureq::get(url)
+            .set("Range", &range_header)
+            .call()?
+            .into_reader();
+
+        let mut reader = ProgressReader::new(&mut body, &progress_bar);
+
         match io::copy(&mut reader, &mut file) {
             Ok(_) => break,
             Err(err) => {
+                start = reader.bytes_read;
                 println!("{:?}", err);
             }
         };
@@ -146,11 +149,12 @@ fn azure_download_disk(url: &str, filename: &str) -> Result<()> {
         retries += 1;
     }
 
+    progress_bar.as_ref().finish_and_clear();
+
     Ok(())
 }
 
 fn azure_delete_group(group_name: &str) -> Result<()> {
-    // az group delete --no-wait -y -g
     let output = Command::new("az")
         .arg("group")
         .arg("delete")
@@ -173,7 +177,13 @@ fn download_image(suite: &str, file: &str, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    let group_name = "cvm-tools-rg4";
+    let random_str: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(7)
+        .map(char::from)
+        .collect();
+
+    let group_name = &format!("cvm-tools-{random_str}");
     let disk_name = "cvm-tools-disk";
     let urn = format!("Canonical:0001-com-ubuntu-confidential-vm-{suite}:22_04-lts-cvm:latest");
 
@@ -512,11 +522,7 @@ fn cli() -> clap::Command {
                             .default_missing_value("always"),
                     ),
                 )
-                .subcommand(
-                    clap::Command::new("customize").arg(
-                        arg!([IMAGE]).required(true)
-                    ),
-                ),
+                .subcommand(clap::Command::new("customize").arg(arg!([IMAGE]).required(true))),
         )
         .subcommand(
             clap::Command::new("tpm")
@@ -532,11 +538,7 @@ fn cli() -> clap::Command {
             clap::Command::new("vm")
                 .about("Manage VMs")
                 .subcommand_required(true)
-                .subcommand(
-                    clap::Command::new("start").arg(
-                        arg!([IMAGE]).required(true)
-                    ),
-                )
+                .subcommand(clap::Command::new("start").arg(arg!([IMAGE]).required(true)))
                 .subcommand(clap::Command::new("kill")),
         )
 }
@@ -566,7 +568,7 @@ fn main() -> Result<()> {
             Some(("download", ssub_matches)) => {
                 check_dependencies(vec!["az"])?;
 
-                let suite = ssub_matches.get_one::<String>("SUITE").expect("required");
+                let suite = ssub_matches.get_one::<String>("suite").expect("required");
 
                 let image_file = format!("{suite}.img");
 
