@@ -45,7 +45,7 @@ cvm-tools tpm start
 # encrypt and deploy the VM using
 # github.com/canonical/encrypt-cloud-image
 # ...encrypt
-encrypt-cloud-image/encrypt-cloud-image encrypt ./livecd.ubuntu-cpc.azure.fde.vhd -o jammy-encrypted.vhd
+encrypt-cloud-image encrypt ./livecd.ubuntu-cpc.azure.fde.vhd -o jammy-encrypted.vhd
 # ...deploy using SRK and uefi.json
 encrypt-cloud-image deploy \
     --srk-pub ./srk.pub \
@@ -56,7 +56,7 @@ encrypt-cloud-image deploy \
     ./jammy-encrypted.vhd
 
 # start the VM
-cvm-tools vm run --image ./jammy-encrypted.vhd
+cvm-tools vm start ./jammy-encrypted.vhd
 
 # kill the VM
 cvm-tools vm kill
