@@ -34,7 +34,7 @@ cvm-tools image download
 
 # customize it to remove make the VM
 # configurable outside of Azure
-cvm-tools image customize
+cvm-tools image customize IMAGE
 
 # setup a vTPM locally and create SRK
 cvm-tools tpm setup
